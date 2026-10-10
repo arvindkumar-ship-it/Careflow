@@ -15,11 +15,26 @@ import axios from 'axios';
 // 1. Axios Instance Setup
 // Dhyaan rakhna: 'baseURL' likhna zaroori hai, varna 404 error aayega.
 const api = axios.create({
-  baseURL: 'https://careflow-backend-4l8t.onrender.com/api', // Tumhara FastAPI backend URL
+  baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api',
   headers: {
     'Content-Type': 'application/json',
   },
 });
+
+let accessToken: string | null = null;
+api.interceptors.request.use((config) => {
+  if (accessToken) config.headers.Authorization = `Bearer ${accessToken}`;
+  return config;
+});
+export const loginAccount = async (username: string, password: string) => {
+  const response = await api.post('/auth/login', { username, password });
+  accessToken = response.data.access_token;
+  return response.data as { role: 'doctor' | 'nurse' | 'patient'; patient_id?: string };
+};
+export const generateAudit = async (patientId: string, note: string) => {
+  const response = await api.post(`/agent-audit/${patientId}`, { note });
+  return response.data;
+};
 
 // 2. API Functions (Zero to End)
 
