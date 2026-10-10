@@ -2,24 +2,25 @@ import os
 import json
 from datetime import datetime
 from typing import List
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 from bson import ObjectId
-from groq import Groq
+from groq import AsyncGroq
 from faker import Faker
 
 # 1. Setup & Environment
 load_dotenv()
+from auth import Account, LoginRequest, current_account, login, require_role, require_patient_access
 app = FastAPI()
 fake = Faker()
 
 # CORS logic - Taaki frontend connect ho sake
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[os.getenv("FRONTEND_ORIGIN", "http://localhost:3000")],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -32,7 +33,7 @@ client = AsyncIOMotorClient(MONGO_URL)
 db = client.careflow
 tasks_collection = db.get_collection("tasks")
 patients_collection = db.get_collection("patients")
-groq_client = Groq(api_key=GROQ_API_KEY)
+groq_client = AsyncGroq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 # 2. Models
 class AnalysisRequest(BaseModel):
@@ -57,18 +58,26 @@ async def seed_patients():
 
 @app.on_event("startup")
 async def startup_event():
-    await seed_patients()
+    if os.getenv("SEED_SYNTHETIC_PATIENTS", "false").lower() == "true":
+        await seed_patients()
+
+@app.post("/api/auth/login")
+def authenticate(request: LoginRequest):
+    return login(request)
 
 # 4. API ENDPOINTS (Step 2)
 
 # A. Get All Patients (Real Database se)
 @app.get("/api/patients")
-async def get_patients():
+async def get_patients(account: Account = Depends(current_account)):
     patients = []
-    cursor = patients_collection.find({}).limit(50)
+    query = {"$or": [{"id": account.patient_id}]} if account.role == "patient" else {}
+    if account.role == "patient" and ObjectId.is_valid(account.patient_id):
+        query["$or"].append({"_id": ObjectId(account.patient_id)})
+    cursor = patients_collection.find(query).limit(50)
     async for doc in cursor:
         patients.append({
-            "id": str(doc["_id"]), # MongoDB ID ko string banana zaroori hai
+            "id": doc.get("id") or str(doc["_id"]), # MongoDB ID ko string banana zaroori hai
             "name": doc["name"],
             "status": doc["status"],
             "diagnosis": doc["diagnosis"],
@@ -78,7 +87,8 @@ async def get_patients():
 
 # B. Get Tasks for Specific Patient
 @app.get("/api/tasks/{patient_id}")
-async def get_tasks(patient_id: str):
+async def get_tasks(patient_id: str, account: Account = Depends(current_account)):
+    require_patient_access(account, patient_id)
     tasks = []
     cursor = tasks_collection.find({"patient_id": patient_id}).sort("created_at", -1)
     async for doc in cursor:
@@ -119,7 +129,10 @@ async def get_tasks(patient_id: str):
 
 
 @app.post("/api/analyze/{patient_id}")
-async def analyze(patient_id: str, request: AnalysisRequest):
+async def analyze(patient_id: str, request: AnalysisRequest, account: Account = Depends(current_account)):
+    require_role(account, "doctor")
+    if groq_client is None:
+        raise HTTPException(503, "AI provider is not configured")
     try:
         # Prompt ko aur strict kar diya taaki AI faltu bakwas na kare
         #prompt = f"Return ONLY a JSON object with a key 'tasks' containing a list of objects. Each object must have 'task' and 'category'. Note: {request.note}"
@@ -136,7 +149,7 @@ async def analyze(patient_id: str, request: AnalysisRequest):
         The JSON must be complete.
         Format strictly as JSON: {{"tasks": [{{"task": "Exact text from note", "category": "Medication/Test/Vital"}}]}}
         Doctor's Note: {request.note} """
-        completion = groq_client.chat.completion = groq_client.chat.completions.create(
+        completion = await groq_client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
             model="llama-3.1-8b-instant",
             response_format={"type": "json_object"},
@@ -144,7 +157,6 @@ async def analyze(patient_id: str, request: AnalysisRequest):
             max_tokens=3072   # Taaki lamba list hone par bhi response pura aaye
         )
         raw_content = completion.choices[0].message.content
-        print(f"🤖 AI Response: {raw_content}") # Terminal mein check karo ye kya aa raha hai
         
         res = json.loads(raw_content)
         
@@ -168,12 +180,14 @@ async def analyze(patient_id: str, request: AnalysisRequest):
             return {"status": "no tasks found"}
 
     except Exception as e:
-        print(f"❌ ERROR: {str(e)}") # Ye terminal mein asli error dikhayega
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Request failed")
 
 # D. Toggle Task Status
 @app.patch("/api/tasks/{task_id}")
-async def toggle_task(task_id: str):
+async def toggle_task(task_id: str, account: Account = Depends(current_account)):
+    require_role(account, "nurse")
+    if not ObjectId.is_valid(task_id):
+        raise HTTPException(422, "Invalid task ID")
     task = await tasks_collection.find_one({"_id": ObjectId(task_id)})
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -192,7 +206,8 @@ async def toggle_task(task_id: str):
 import uuid
 
 @app.post("/api/patients")
-async def register_patient(patient: dict):
+async def register_patient(patient: dict, account: Account = Depends(current_account)):
+    require_role(account, "doctor")
     try:
         # Unique ID aur default Ward assign karna
         patient["id"] = str(uuid.uuid4())[:8].upper() # Short Unique ID e.g. CF72A1
@@ -200,12 +215,16 @@ async def register_patient(patient: dict):
             patient["ward_id"] = "WARD-01" 
         
         await patients_collection.insert_one(patient)
+        patient.pop("_id", None)
         return {"status": "success", "patient": patient}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Request failed")
     
 @app.post("/api/agent-audit/{patient_id}")
-async def agent_audit(patient_id: str, request: AnalysisRequest):
+async def agent_audit(patient_id: str, request: AnalysisRequest, account: Account = Depends(current_account)):
+    require_role(account, "doctor")
+    if groq_client is None:
+        raise HTTPException(503, "AI provider is not configured")
     try:
         # 1. Alag Prompt jo sirf 3 points nikalega
         audit_prompt = f"""
@@ -219,7 +238,7 @@ async def agent_audit(patient_id: str, request: AnalysisRequest):
         """
 
         # 2. Groq Call (Alag variable names ke saath taaki purana code na phate)
-        audit_completion = groq_client.chat.completions.create(
+        audit_completion = await groq_client.chat.completions.create(
             messages=[{"role": "user", "content": audit_prompt}],
             model="llama-3.1-8b-instant",
             response_format={"type": "json_object"},
@@ -230,7 +249,6 @@ async def agent_audit(patient_id: str, request: AnalysisRequest):
         return audit_data
 
     except Exception as e:
-        print(f"Audit Error: {e}")
         raise HTTPException(status_code=500, detail="Audit failed")
     
 if __name__ == "__main__":

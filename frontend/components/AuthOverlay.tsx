@@ -1,21 +1,19 @@
 'use client'
 import { useState } from 'react'
+import { loginAccount } from '@/lib/api'
 
 export default function AuthOverlay({ onLogin }: { onLogin: (role: string, id?: string) => void }) {
   const [view, setView] = useState<'select' | 'staff' | 'patient'>('select');
   const [id, setId] = useState('');
   const [pass, setPass] = useState('');
 
-  const handleStaffLogin = () => {
-    // Simple logic: Doc ke liye 'doc123', Nurse ke liye 'nurse123'
-    if (id === 'doctor' && pass === 'doc123') onLogin('doctor');
-    else if (id === 'nurse' && pass === 'nurse123') onLogin('nurse');
-    else alert("Invalid Staff Credentials");
-  };
-
-  const handlePatientLogin = () => {
-    if (id.length > 3) onLogin('patient', id); // Patient apni ID se login karega
-    else alert("Enter valid Patient ID");
+  const handleLogin = async () => {
+    try {
+      const account = await loginAccount(id, pass);
+      onLogin(account.role, account.patient_id);
+    } catch {
+      alert("Login failed. Check your configured account credentials.");
+    }
   };
 
   return (
@@ -34,15 +32,16 @@ export default function AuthOverlay({ onLogin }: { onLogin: (role: string, id?: 
           <div className="space-y-4">
             <input placeholder="Staff Username" value={id} onChange={(e)=>setId(e.target.value)} className="w-full p-4 border rounded-2xl text-sm" />
             <input type="password" placeholder="Password" value={pass} onChange={(e)=>setPass(e.target.value)} className="w-full p-4 border rounded-2xl text-sm" />
-            <button onClick={handleStaffLogin} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-bold">Login as Staff</button>
+            <button onClick={handleLogin} className="w-full py-4 bg-slate-900 text-white rounded-2xl font-bold">Login as Staff</button>
             <button onClick={() => setView('select')} className="w-full text-slate-400 text-xs font-bold uppercase">Back</button>
           </div>
         )}
 
         {view === 'patient' && (
           <div className="space-y-4">
-            <input placeholder="Enter Patient ID" value={id} onChange={(e)=>setId(e.target.value)} className="w-full p-4 border rounded-2xl text-sm" />
-            <button onClick={handlePatientLogin} className="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold shadow-lg shadow-blue-200">View My Careflow</button>
+            <input placeholder="Patient Username" value={id} onChange={(e)=>setId(e.target.value)} className="w-full p-4 border rounded-2xl text-sm" />
+            <input type="password" placeholder="Password" value={pass} onChange={(e)=>setPass(e.target.value)} className="w-full p-4 border rounded-2xl text-sm" />
+            <button onClick={handleLogin} className="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold shadow-lg shadow-blue-200">View My Careflow</button>
             <button onClick={() => setView('select')} className="w-full text-slate-400 text-xs font-bold uppercase">Back</button>
           </div>
         )}

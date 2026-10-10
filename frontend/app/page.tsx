@@ -648,7 +648,7 @@
 //     <div className="flex h-screen bg-[#F8FAFC] overflow-hidden font-sans antialiased text-slate-900">
       
 //       {/* 1. Sidebar Component (Self-contained data fetching) */}
-//       <PatientSidebar onSelectPatient={(p: any) => setSelectedPatient(p)} />
+//       <PatientSidebar key={isAuthenticated ? role : "unauthenticated"} onSelectPatient={(p: any) => setSelectedPatient(p)} />
 
 //       {/* 2. Main Workspace */}
 //       <main className="flex-1 flex flex-col p-8 overflow-y-auto bg-slate-50/50">
@@ -839,6 +839,7 @@ import {
   Calendar, Clock, ClipboardList, User, FileText 
 } from "lucide-react";
 import AuthOverlay from '@/components/AuthOverlay';
+import { generateAudit } from '@/lib/api';
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -901,7 +902,7 @@ export default function Dashboard() {
   };
 
   const handleToggleTask = async (taskId: string) => {
-    if (role === 'doctor') return alert("Only Nurses can update status.");
+    if (role !== 'nurse') return alert("Only Nurses can update status.");
     try {
       await toggleTaskStatus(taskId);
       fetchLatestTasks();
@@ -955,12 +956,8 @@ const generateAgenticReport = async () => {
     if (!selectedPatient) return;
     setIsGeneratingReport(true);
     try {
-      const res = await fetch(`https://careflow-backend-4l8t.onrender.com/api/agent-audit/${selectedPatient.id}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ note: "Generate report" }) 
-      });
-      const data = await res.json();
+      if (!note.trim()) throw new Error("Enter a source note before generating an audit");
+      const data = await generateAudit(selectedPatient.id, note);
 
       let reportText = "CAREFLOW CLINICAL AUDIT\n";
       reportText += "=======================\n\n";
@@ -1012,7 +1009,7 @@ return (
          {/* Yahan Condition dalo: Agar role 'patient' nahi hai tabhi ye dikhao */}
          {role !== 'patient' && (
           // <div className="w-80 h-full border-r border-slate-200 overflow-y-auto bg-white shrink-0">
-            <PatientSidebar onSelectPatient={(p: any) => setSelectedPatient(p)} />
+            <PatientSidebar key={isAuthenticated ? role : "unauthenticated"} onSelectPatient={(p: any) => setSelectedPatient(p)} />
 
             
           )}
